@@ -1,0 +1,172 @@
+
+name: Build EstateFlow Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: estateflow-android-build
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Locate Expo application
+        id: locate
+        shell: bash
+        run: |
+          APP_DIR=$(python3 - <<'PY'
+          import os
+          import json
+          import sys
+
+          candidates = []
+
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [
+                  d for d in dirs
+                  if d not in (
+                      "node_modules",
+                      ".git",
+                      "android",
+                      "ios",
+                      "build",
+                      "dist"
+                  )
+              ]
+
+              if "package.json" not in files:
+                  continue
+
+              path = os.path.join(root, "package.json")
+
+              try:
+                  with open(path, encoding="utf-8") as f:
+                      package = json.load(f)
+
+                  deps = {}
+                  deps.update(package.get("dependencies", {}))
+                  deps.update(package.get("devDependencies", {}))
+
+                  if "expo" in deps:
+                      candidates.append(root)
+
+              except Exception:
+                  continue
+
+          if not candidates:
+              print("No Expo application found.", file=sys.stderr)
+              sys.exit(1)
+
+          candidates.sort(key=lambda x: (x.count(os.sep), len(x)))
+
+          print(candidates[0])
+          PY
+          )
+
+          echo "Expo project found at: $APP_DIR"
+          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        working-directory: ${{ steps.locate.outputs.app_dir }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --legacy-peer-deps
+          else
+            npm install --legacy-peer-deps
+          fi
+
+      - name: Prepare local assets
+        working-directory: ${{ steps.locate.outputs.app_dir }}
+        run: |
+          if [ -f scripts/copy-font.mjs ]; then
+            node scripts/copy-font.mjs
+          else
+            echo "No font preparation script found. Skipping."
+          fi
+
+      - name: TypeScript validation
+        working-directory: ${{ steps.locate.outputs.app_dir }}
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
+            npm run typecheck
+          elif [ -f tsconfig.json ]; then
+            npx tsc --noEmit
+          else
+            echo "No TypeScript configuration found. Skipping."
+          fi
+
+      - name: Run unit tests
+        working-directory: ${{ steps.locate.outputs.app_dir }}
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test -- --run
+          else
+            echo "No test script found. Skipping."
+          fi
+
+      - name: Generate native Android project
+        working-directory: ${{ steps.locate.outputs.app_dir }}
+        run: |
+          npx expo prebuild --platform android --no-install
+
+      - name: Grant Gradle execution permission
+        working-directory: ${{ steps.locate.outputs.app_dir }}/android
+        run: chmod +x gradlew
+
+      - name: Build release APK
+        working-directory: ${{ steps.locate.outputs.app_dir }}/android
+        run: |
+          ./gradlew assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx3g"
+
+      - name: Verify APK
+        working-directory: ${{ steps.locate.outputs.app_dir }}
+        run: |
+          APK_DIR="android/app/build/outputs/apk/release"
+
+          if ! find "$APK_DIR" -maxdepth 1 -type f -name "*.apk" | grep -q .; then
+            echo "APK build failed: No APK file found."
+            exit 1
+          fi
+
+          ls -lh "$APK_DIR"/*.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EstateFlow-Android-APK
+          path: ${{ steps.locate.outputs.app_dir }}/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish APK as GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: estateflow-apk-${{ github.run_number }}
+          name: EstateFlow Android APK #${{ github.run_number }}
+          generate_release_notes: true
+          files: ${{ steps.locate.outputs.app_dir }}/android/app/build/outputs/apk/release/*.apk
