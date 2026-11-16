@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: extract-estateflow
+  cancel-in-progress: false
+
 jobs:
   unzip:
     runs-on: ubuntu-latest
@@ -14,24 +18,48 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install unzip
+        run: sudo apt-get update && sudo apt-get install -y unzip
 
       - name: Extract ZIP
+        shell: bash
         run: |
-          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+          mapfile -t ZIP_FILES < <(find . -maxdepth 1 -type f -iname "*.zip" | sort)
 
-          if [ -z "$ZIP_FILE" ]; then
+          if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
             echo "No ZIP file found in repository root."
             exit 1
           fi
+
+          if [ "${#ZIP_FILES[@]}" -gt 1 ]; then
+            echo "Multiple ZIP files found. Keep only one ZIP in repository root."
+            printf '%s\n' "${ZIP_FILES[@]}"
+            exit 1
+          fi
+
+          ZIP_FILE="${ZIP_FILES[0]}"
+
+          echo "Extracting: $ZIP_FILE"
 
           unzip -o "$ZIP_FILE" -d .
 
           rm -f "$ZIP_FILE"
 
       - name: Commit extracted files
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A
-          git diff --cached --quiet || git commit -m "Extract ZIP into repository root"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Extract EstateFlow source code"
           git push
