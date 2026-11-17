@@ -24,8 +24,7 @@ jobs:
             exit 1
           fi
 
-          unzip -o "$ZIP_FILE" -d .
-
+          unzip -o "$ZIP_FILE" -x '.github/*' '__MACOSX/*' -d .
           rm -f "$ZIP_FILE"
 
       - name: Commit extracted files
