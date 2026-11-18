@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "EstateFlow",
+    "slug": "estateflow",
+    "scheme": "estateflow",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B1F3A"
+    },
+    "android": {
+      "package": "com.estateflow.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B2A4A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "allowBackup": false,
+      "softwareKeyboardLayoutMode": "resize",
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "expo-secure-store",
+      "expo-font",
+      ["expo-local-authentication", { "faceIDPermission": "Unlock EstateFlow with Face ID" }],
+      ["expo-notifications", { "color": "#0B2A4A" }],
+      ["expo-image-picker", { "photosPermission": "Attach photos to properties, contacts and documents.", "cameraPermission": "Take photos of properties and documents." }],
+      ["expo-contacts", { "contactsPermission": "Import people from your phone contacts." }]
+    ],
+    "experiments": { "typedRoutes": false }
+  }
+}
