@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { RefreshControl, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -6,155 +6,148 @@ import { useApp } from '../../ctx/AppContext';
 import { useTheme } from '../../ctx/ThemeContext';
 import { useData } from '../../lib/hooks';
 import { Repo } from '../../db/repo';
-import { dashboardStats, monthlyCounts, monthlyWonValue, winRate } from '../../lib/analytics';
+import { ReportRepo } from '../../db/reportRepo';
+import { STAGE_LABEL } from '../../db/dealRepo';
 import { Fmt } from '../../lib/format';
+import { rs } from '../../lib/estate';
 import { radius, space, TAB_SPACE } from '../../lib/theme';
-import { AnimatedNumber, Avatar, Card, EmptyState, FadeIn, Hero, IconButton, IconName, Pressy, Screen, SectionHeader, Skeleton, SwipeRow, T } from '../../ui/kit';
-import { Sparkline } from '../../ui/charts';
-import { FollowUpCard, TimelineItem } from '../../ui/parts';
-import { Header } from '../../ui/kit';
-import { Credit } from '../../ui/kit';
-import { useCan } from '../../license/LicenseGate';
+import { AnimatedNumber, Badge, Card, Credit, EmptyState, FadeIn, Header, Hero, IconButton, IconName, Pressy, Row, Screen, SectionHeader, Skeleton, SwipeRow, T } from '../../ui/kit';
+import { FollowUpCard } from '../../ui/parts';
+import { AVAIL_META, STAGE_TONE } from '../../ui/estate';
+import { PropertyPicker } from '../../ui/PropertyPicker';
+import { RangeChips, RangeState, rangeOf } from '../../ui/RangeChips';
 import { haptic } from '../../lib/haptics';
 
 const greeting = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; };
 
-export default function Dashboard() {
-  const router = useRouter();
-  const { c } = useTheme();
-  const { settings, bump, toast } = useApp();
-  const can = useCan();
+export default function Home() {
+  const router = useRouter(); const { c } = useTheme(); const { settings, bump, toast } = useApp();
+  const [range, setRange] = useState<RangeState>({ key: 'month' }); const [pick, setPick] = useState<null | 'listing' | 'deal'>(null); const [refreshing, setRefreshing] = useState(false);
+  const r = rangeOf(range);
   const { data, loading, reload } = useData(async () => {
-    const [rows, followups, acts, customers] = await Promise.all([Repo.analyticsRows(), Repo.listFollowUps({ done: false }), Repo.listActivities({ limit: 5 }), Repo.customerMap()]);
-    return { rows, followups, acts, customers };
-  });
-  const [refreshing, setRefreshing] = React.useState(false);
+    const [k, followups, props, deals, pending, expiring, customers] = await Promise.all([ReportRepo.kpis(r), Repo.listFollowUps({ done: false }), ReportRepo.recentProperties(5), ReportRepo.recentDeals(5), ReportRepo.pendingPayments(4), ReportRepo.expiringListings(7, 4), Repo.customerMap()]);
+    return { k, followups, props, deals, pending, expiring, customers };
+  }, [r.from, r.to]);
   const refresh = async () => { setRefreshing(true); await reload(); setRefreshing(false); };
-
-  const stats = data ? dashboardStats(data.rows) : null;
-  const won6 = data ? monthlyWonValue(data.rows.leads, 6).map((m) => m.value) : [];
-  const cust6 = data ? monthlyCounts(data.rows.customers.map((x) => x.createdAt), 6).map((m) => m.value) : [];
-  const empty = !!data && data.rows.customers.length === 0 && data.rows.leads.length === 0;
-  const name = settings.ownerName.split(' ')[0];
+  const name = settings.ownerName.split(' ')[0]; const k = data?.k;
+  const now = Date.now(); const overdue = data ? data.followups.filter((f) => f.dueAt < now).length : 0;
 
   const quick: { icon: IconName; label: string; go: () => void; color: string }[] = [
-    { icon: 'person-add', label: 'Customer', go: () => router.push('/customer/edit'), color: c.primary },
-    { icon: 'flag', label: 'Lead', go: () => router.push('/lead/edit'), color: c.secondary },
-    { icon: 'alarm', label: 'Follow-up', go: () => router.push('/followup/edit'), color: c.warning },
-    { icon: 'stats-chart', label: 'Analytics', go: () => router.push('/analytics'), color: c.accent },
+    { icon: 'business', label: 'Property', go: () => router.push('/property/edit'), color: c.primary },
+    { icon: 'person-add', label: 'Contact', go: () => router.push('/customer/edit'), color: c.secondary },
+    { icon: 'pricetag', label: 'Listing', go: () => setPick('listing'), color: c.accent },
+    { icon: 'briefcase', label: 'Deal', go: () => setPick('deal'), color: c.success },
+    { icon: 'wallet', label: 'Expense', go: () => router.push('/finance'), color: c.warning },
+    { icon: 'alarm', label: 'Follow-up', go: () => router.push('/followup/edit'), color: c.danger },
   ];
+  const nothing = !!k && k.totalProperties === 0 && !data!.deals.length;
 
   return (
     <View style={{ flex: 1, backgroundColor: c.bg }}>
       <Header title={`${greeting()}${name ? ',' : ''}${name ? '\n' + name : ''}`} subtitle={settings.businessName} right={<IconButton icon="settings-outline" tone="soft" label="Settings" onPress={() => router.push('/settings')} />} />
       <Screen contentStyle={{ paddingBottom: TAB_SPACE + 24 }} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={c.primary} colors={[c.primary]} progressBackgroundColor={c.surface} />}>
-        {loading || !stats ? (
-          <View style={{ gap: space.lg }}><Skeleton h={190} r={radius.xl} /><View style={{ flexDirection: 'row', gap: space.md }}><Skeleton h={96} r={radius.lg} w="31%" /><Skeleton h={96} r={radius.lg} w="31%" /><Skeleton h={96} r={radius.lg} w="31%" /></View><Skeleton h={120} r={radius.lg} /></View>
-        ) : empty ? (
+        <RangeChips value={range} onChange={setRange} />
+        {loading || !k ? <View style={{ gap: space.lg, marginTop: space.lg }}><Skeleton h={170} r={radius.xl} /><Skeleton h={96} r={radius.lg} /></View> : (<>
           <FadeIn>
-            <Hero><T v="overline" color="rgba(255,255,255,0.8)">Welcome</T><T v="title" color="#FFFFFF" style={{ marginTop: 6 }}>Let’s build your customer base</T><T v="body" color="rgba(255,255,255,0.85)" style={{ marginTop: 6 }}>Add your first customer or import your contacts to see your dashboard come alive.</T></Hero>
-            <EmptyState icon="people" title="No customers yet" message="Add one by one, or bring in a CSV file or your phone contacts in seconds." action="Add first customer" onAction={() => router.push('/customer/edit')} />
-            {can('data.importExport') ? <Pressy onPress={() => router.push('/import-export')} style={{ alignItems: 'center', minHeight: 44, justifyContent: 'center' }}><T v="label" color={c.primary}>Import customers instead</T></Pressy> : null}
+            <Hero style={{ marginTop: space.lg }}>
+              <T v="overline" color="rgba(255,255,255,0.78)">Net income</T>
+              <AnimatedNumber value={k.netIncome} format={rs} v="display" color="#FFFFFF" />
+              <T v="label" color="rgba(255,255,255,0.85)" style={{ marginTop: 2 }}>Commission {rs(k.commissionEarned)} · Expenses {rs(k.expenses)}</T>
+              <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.lg }}>
+                <HeroStat label="Deals closed" value={String(k.completedDeals)} /><HeroStat label="Sales volume" value={Fmt.compact(k.salesVolume)} /><HeroStat label="Open deals" value={String(k.activeDeals)} />
+              </View>
+            </Hero>
           </FadeIn>
-        ) : (
-          <>
-            <FadeIn>
-              <Hero>
-                <T v="overline" color="rgba(255,255,255,0.78)">Open pipeline</T>
-                <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: 4 }}>
-                  <AnimatedNumber value={stats.pipelineValue} format={Fmt.money} v="display" color="#FFFFFF" />
-                  <Sparkline values={won6} color="#FFFFFF" width={96} height={40} />
-                </View>
-                <T v="label" color="rgba(255,255,255,0.85)" style={{ marginTop: 2 }}>Forecast {Fmt.money(stats.weightedValue)} · {stats.openLeads} open lead{stats.openLeads === 1 ? '' : 's'}</T>
-                <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.lg }}>
-                  <HeroStat label="Won value" value={Fmt.compact(stats.wonValueMonth)} />
-                  <HeroStat label="Deals won" value={String(stats.wonCountMonth)} />
-                  <HeroStat label="Win rate" value={`${winRate(data!.rows.leads)}%`} />
-                </View>
-              </Hero>
-            </FadeIn>
 
-            <FadeIn index={1}>
-              <SectionHeader title="Today’s focus" action="All follow-ups" onAction={() => router.push('/followups')} />
+          <FadeIn index={1}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: space.lg, marginTop: space.xl }}>
+              {quick.map((q) => (
+                <Pressy key={q.label} onPress={q.go} haptics="light" accessibilityLabel={q.label} style={{ width: '30%', alignItems: 'center', gap: 8 }}>
+                  <View style={{ width: 56, height: 56, borderRadius: 20, backgroundColor: q.color + '1F', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={q.icon} size={26} color={q.color} /></View>
+                  <T v="caption" color={c.textMuted}>{q.label}</T>
+                </Pressy>
+              ))}
+            </View>
+          </FadeIn>
+
+          {nothing ? <EmptyState icon="business-outline" title="Start with your first property" message="Add a property, then create a listing and open deals as buyers show interest." action="Add property" onAction={() => router.push('/property/edit')} /> : (<>
+            <FadeIn index={2}>
+              <SectionHeader title="Inventory" action="Explore" onAction={() => router.push('/explore')} />
               <View style={{ flexDirection: 'row', gap: space.md }}>
-                <FocusTile label="Overdue" value={stats.overdue} tone={stats.overdue ? c.danger : c.textFaint} icon="alert-circle" onPress={() => router.push('/followups')} />
-                <FocusTile label="Due today" value={stats.dueToday} tone={stats.dueToday ? c.warning : c.textFaint} icon="today" onPress={() => router.push('/followups')} />
-                <FocusTile label="Next 7 days" value={stats.upcoming7} tone={c.primary} icon="calendar" onPress={() => router.push('/followups')} />
+                <Tile label="Properties" value={k.totalProperties} onPress={() => router.push('/explore')} />
+                <Tile label="Active listings" value={k.activeListings} onPress={() => router.push('/explore')} />
+                <Tile label="Available" value={k.available} tone={c.success} onPress={() => router.push('/explore')} />
+              </View>
+              <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.md }}>
+                <Tile label="In negotiation" value={k.underNegotiation} tone={c.warning} onPress={() => router.push('/deals')} />
+                <Tile label="Reserved" value={k.reserved} tone={c.secondary} onPress={() => router.push('/deals')} />
+                <Tile label="Sold / rented" value={k.sold + k.rented} onPress={() => router.push('/insights')} />
               </View>
             </FadeIn>
 
-            <FadeIn index={2}>
-              <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.xl }}>
-                {quick.map((q) => (
-                  <Pressy key={q.label} onPress={q.go} haptics="light" accessibilityLabel={q.label} style={{ flex: 1, alignItems: 'center', gap: 8 }}>
-                    <View style={{ width: 56, height: 56, borderRadius: 20, backgroundColor: q.color + '1F', alignItems: 'center', justifyContent: 'center' }}><Ionicons name={q.icon} size={26} color={q.color} /></View>
-                    <T v="caption" color={c.textMuted}>{q.label}</T>
-                  </Pressy>
+            {k.outstandingPayments > 0 || data!.pending.length ? (
+              <FadeIn index={3}>
+                <SectionHeader title="Pending payments" action="Finance" onAction={() => router.push('/finance')} />
+                <Card pad={0}>
+                  <Row icon="alert-circle" iconColor={c.warning} title="Total outstanding from buyers" right={<T v="bodyStrong">{rs(k.outstandingPayments)}</T>} />
+                  {data!.pending.map((p, i) => <Row key={p.id} icon="briefcase" title={`${p.code} · ${p.title}`} subtitle={p.buyer || 'No buyer'} right={<T v="bodyStrong">{rs(p.outstanding)}</T>} onPress={() => router.push({ pathname: '/deal/[id]', params: { id: String(p.id) } })} last={i === data!.pending.length - 1} />)}
+                </Card>
+              </FadeIn>
+            ) : null}
+
+            {data!.expiring.length ? (
+              <FadeIn index={4}>
+                <SectionHeader title="Listings expiring soon" />
+                <Card pad={0}>{data!.expiring.map((l, i) => <Row key={l.id} icon="timer" iconColor={c.warning} title={l.title} subtitle={`${l.code} · expires ${l.expiry_date}`} onPress={() => router.push({ pathname: '/property/[id]', params: { id: String(l.property_id) } })} last={i === data!.expiring.length - 1} />)}</Card>
+              </FadeIn>
+            ) : null}
+          </>)}
+
+          {data!.followups.length ? (
+            <FadeIn index={5}>
+              <SectionHeader title={overdue ? `Up next · ${overdue} overdue` : 'Up next'} action="All" onAction={() => router.push('/followups')} />
+              <View style={{ gap: space.sm }}>
+                {data!.followups.slice(0, 3).map((f) => (
+                  <SwipeRow key={f.id} onRight={async () => { await Repo.completeFollowUp(f.id); bump(); toast('Follow-up done', 'success'); }} onLeft={async () => { await Repo.snoozeFollowUp(f.id, f.dueAt + 86400000); bump(); toast('Snoozed for a day', 'success'); }}>
+                    <FollowUpCard f={f} customerName={f.customerId ? data!.customers[f.customerId]?.name : undefined} onPress={() => router.push({ pathname: '/followup/edit', params: { id: String(f.id) } })} onToggle={async () => { await Repo.completeFollowUp(f.id); haptic.success(); bump(); }} />
+                  </SwipeRow>
                 ))}
               </View>
             </FadeIn>
+          ) : null}
 
-            <FadeIn index={3}>
-              <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.xl }}>
-                <Card style={{ flex: 1 }} onPress={() => router.push('/customers')} pad="md">
-                  <T v="caption" color={c.textMuted}>Customers</T>
-                  <AnimatedNumber value={stats.totalCustomers} v="title" style={{ marginTop: 2 }} />
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
-                    <T v="caption" color={c.success}>+{stats.newThisMonth} this month</T>
-                    <Sparkline values={cust6} width={52} height={24} color={c.success} />
-                  </View>
-                </Card>
-                <Card style={{ flex: 1 }} onPress={() => router.push('/customers')} pad="md">
-                  <T v="caption" color={c.textMuted}>VIP customers</T>
-                  <AnimatedNumber value={stats.vip} v="title" style={{ marginTop: 2 }} />
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 }}><Ionicons name="star" size={13} color={c.secondary} /><T v="caption" color={c.textMuted}>Top accounts</T></View>
-                </Card>
-              </View>
+          {data!.props.length ? (
+            <FadeIn index={6}>
+              <SectionHeader title="Recent properties" />
+              <Card pad={0}>{data!.props.map((p, i) => <Row key={p.id} icon="home" title={p.title} subtitle={[p.code, p.society || p.city].filter(Boolean).join(' · ')} right={<Badge label={AVAIL_META[p.availability as keyof typeof AVAIL_META]?.label ?? p.availability} tone={AVAIL_META[p.availability as keyof typeof AVAIL_META]?.tone ?? 'neutral'} />} onPress={() => router.push({ pathname: '/property/[id]', params: { id: String(p.id) } })} last={i === data!.props.length - 1} />)}</Card>
             </FadeIn>
+          ) : null}
+          {data!.deals.length ? (
+            <FadeIn index={7}>
+              <SectionHeader title="Recent deals" action="All deals" onAction={() => router.push('/deals')} />
+              <Card pad={0}>{data!.deals.map((d, i) => <Row key={d.id} icon="briefcase" title={d.title} subtitle={`${d.code} · ${Fmt.date(d.updated_at, true)}`} right={<Badge label={STAGE_LABEL[d.stage as keyof typeof STAGE_LABEL]} tone={STAGE_TONE[d.stage as keyof typeof STAGE_TONE]} />} onPress={() => router.push({ pathname: '/deal/[id]', params: { id: String(d.id) } })} last={i === data!.deals.length - 1} />)}</Card>
+            </FadeIn>
+          ) : null}
 
-            {data!.followups.length ? (
-              <FadeIn index={4}>
-                <SectionHeader title="Up next" />
-                <View style={{ gap: space.sm }}>
-                  {data!.followups.slice(0, 3).map((f) => (
-                    <SwipeRow key={f.id} onRight={async () => { await Repo.completeFollowUp(f.id); bump(); toast('Follow-up done', 'success'); }} onLeft={async () => { await Repo.snoozeFollowUp(f.id, f.dueAt + 86400000); bump(); toast('Snoozed 1 day'); }}>
-                      <FollowUpCard f={f} customerName={f.customerId ? data!.customers[f.customerId]?.name : undefined} onPress={() => router.push({ pathname: '/followup/edit', params: { id: String(f.id) } })}
-                        onToggle={async () => { await Repo.completeFollowUp(f.id); haptic.success(); bump(); }} />
-                    </SwipeRow>
-                  ))}
-                </View>
-              </FadeIn>
-            ) : null}
-
-            {data!.acts.length ? (
-              <FadeIn index={5}>
-                <SectionHeader title="Recent activity" />
-                <Card>{data!.acts.map((a, i) => <TimelineItem key={a.id} a={{ ...a, title: `${a.title}${a.customerId && data!.customers[a.customerId] ? ' · ' + data!.customers[a.customerId].name : ''}` }} last={i === data!.acts.length - 1} />)}</Card>
-              </FadeIn>
-            ) : null}
-          </>
-        )}
+          <SectionHeader title="CRM tools" />
+          <Card pad={0}>
+            <Row icon="funnel" iconColor={c.secondary} title="Lead pipeline" subtitle="Inherited CRM leads board" onPress={() => router.push('/pipeline')} />
+            <Row icon="alarm" iconColor={c.warning} title="Follow-ups" subtitle={overdue ? `${overdue} overdue` : 'Reminders and calls'} onPress={() => router.push('/followups')} />
+            <Row icon="stats-chart" iconColor={c.accent} title="CRM analytics" onPress={() => router.push('/analytics')} />
+            <Row icon="apps" iconColor={c.primary} title="More" subtitle="Groups, import/export, backup, settings" onPress={() => router.push('/more')} last />
+          </Card>
+        </>)}
         <Credit style={{ marginTop: space.xxl }} />
       </Screen>
+      <PropertyPicker visible={pick !== null} onClose={() => setPick(null)} title={pick === 'deal' ? 'Which property is the deal for?' : 'Which property is the listing for?'}
+        onPick={(id) => { const kind = pick; setPick(null); router.push({ pathname: kind === 'deal' ? '/deal/new' : '/listing/edit', params: { propertyId: String(id) } }); }} />
     </View>
   );
 }
 
 function HeroStat({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: radius.md, paddingVertical: 10, paddingHorizontal: 12 }}>
-      <T v="bodyStrong" color="#FFFFFF" numberOfLines={1}>{value}</T>
-      <T v="caption" color="rgba(255,255,255,0.8)" numberOfLines={1}>{label}</T>
-    </View>
-  );
+  return (<View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: radius.md, paddingVertical: 10, paddingHorizontal: 12 }}><T v="bodyStrong" color="#FFFFFF" numberOfLines={1}>{value}</T><T v="caption" color="rgba(255,255,255,0.8)" numberOfLines={1}>{label}</T></View>);
 }
-
-function FocusTile({ label, value, tone, icon, onPress }: { label: string; value: number; tone: string; icon: IconName; onPress: () => void }) {
-  return (
-    <Card onPress={onPress} pad="md" style={{ flex: 1, gap: 8 }}>
-      <Ionicons name={icon} size={20} color={tone} />
-      <AnimatedNumber value={value} v="title" />
-      <T v="caption" numberOfLines={1} color={undefined} style={{ opacity: 0.75 }}>{label}</T>
-    </Card>
-  );
+function Tile({ label, value, tone, onPress }: { label: string; value: number; tone?: string; onPress: () => void }) {
+  return (<Card onPress={onPress} pad="md" style={{ flex: 1, gap: 4 }}><AnimatedNumber value={value} v="title" color={tone} /><T v="caption" numberOfLines={1} style={{ opacity: 0.75 }}>{label}</T></Card>);
 }

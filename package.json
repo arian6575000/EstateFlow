@@ -52,7 +52,7 @@
     "start": "expo start",
     "android": "expo start --android",
     "typecheck": "tsc --noEmit",
-    "test": "tsx tests/repo.test.ts && tsx tests/license.test.ts && tsx tests/analytics.test.ts && tsx tests/csv.test.ts && tsx tests/theme.test.ts && tsx tests/domain.test.ts && tsx tests/estate.test.ts"
+    "test": "tsx tests/repo.test.ts && tsx tests/license.test.ts && tsx tests/analytics.test.ts && tsx tests/csv.test.ts && tsx tests/theme.test.ts && tsx tests/domain.test.ts && tsx tests/estate.test.ts && tsx tests/deals.test.ts && tsx tests/format.test.ts"
   },
   "private": true
 }

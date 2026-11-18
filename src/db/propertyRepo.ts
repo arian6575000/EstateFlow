@@ -73,6 +73,23 @@ export interface PropertyFilter {
   sort?: 'newest' | 'oldest' | 'area_desc'; limit?: number; offset?: number;
 }
 
+/** Same as PropertyRepo.applyAvailability but WITHOUT opening a transaction: call it from inside one (deal flows need availability + deal rows to commit together). */
+export async function applyAvailabilityTx(propertyId: number, action: AvailabilityAction, reason = ''): Promise<AvailabilityResult> {
+  const db = getDb();
+  const p = await db.getFirstAsync<any>('SELECT availability, reserved_by_deal_id, transaction_type FROM properties WHERE id = ?', [propertyId]);
+  assertDomain(p, 'not_found', 'Property not found');
+  const active = await db.getAllAsync<{ id: number }>("SELECT id FROM deals WHERE property_id = ? AND stage NOT IN ('completed','cancelled')", [propertyId]);
+  const result = transitionAvailability({ current: p.availability, reservedByDealId: p.reserved_by_deal_id ?? null, activeDealIds: active.map((d) => d.id), propertyTransaction: p.transaction_type }, action);
+  if (!result.ok) return result;
+  const dealId = 'dealId' in action ? action.dealId : null;
+  await db.runAsync('UPDATE properties SET availability = ?, reserved_by_deal_id = ?, updated_at = ? WHERE id = ?', [result.to, result.reservedByDealId, now(), propertyId]);
+  if (result.to !== p.availability || result.reservedByDealId !== (p.reserved_by_deal_id ?? null)) {
+    await db.runAsync('INSERT INTO availability_history (property_id, from_state, to_state, action, deal_id, reason, at) VALUES (?,?,?,?,?,?,?)',
+      [propertyId, p.availability, result.to, action.type, dealId, reason, now()]);
+  }
+  return result;
+}
+
 export const PropertyRepo = {
   // ---------- properties ----------
   async createProperty(i: PropertyInput): Promise<number> {
@@ -143,6 +160,77 @@ export const PropertyRepo = {
     return rows.map(toProperty);
   },
 
+
+  // ---------- photos ----------
+  async addPhoto(propertyId: number, file: string, caption = ''): Promise<number> {
+    const db = getDb();
+    assertDomain(await db.getFirstAsync('SELECT id FROM properties WHERE id = ?', [propertyId]), 'not_found', 'Property not found');
+    const n = (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM property_photos WHERE property_id = ?', [propertyId]))!.n;
+    const res = await db.runAsync('INSERT INTO property_photos (property_id, file, caption, is_main, sort, created_at) VALUES (?,?,?,?,?,?)', [propertyId, file, caption, n === 0 ? 1 : 0, n, now()]);
+    return res.lastInsertRowId;
+  },
+  async listPhotos(propertyId: number) {
+    return (await getDb().getAllAsync<any>('SELECT * FROM property_photos WHERE property_id = ? ORDER BY is_main DESC, sort, id', [propertyId]))
+      .map((r) => ({ id: r.id as number, file: r.file as string, caption: r.caption as string, isMain: !!r.is_main }));
+  },
+  /** Main photo file per property, in one query, for list cards (avoids N+1 and never loads full galleries). */
+  async mainPhotos(propertyIds: number[]): Promise<Record<number, string>> {
+    if (!propertyIds.length) return {};
+    const rows = await getDb().getAllAsync<any>(`SELECT property_id, file FROM property_photos WHERE is_main = 1 AND property_id IN (${propertyIds.map(() => '?').join(',')})`, propertyIds);
+    return Object.fromEntries(rows.map((r) => [r.property_id, r.file]));
+  },
+  async setMainPhoto(propertyId: number, photoId: number) {
+    const db = getDb();
+    await db.withTransactionAsync(async () => {
+      assertDomain(await db.getFirstAsync('SELECT id FROM property_photos WHERE id = ? AND property_id = ?', [photoId, propertyId]), 'not_found', 'Photo not found');
+      await db.runAsync('UPDATE property_photos SET is_main = 0 WHERE property_id = ?', [propertyId]);
+      await db.runAsync('UPDATE property_photos SET is_main = 1 WHERE id = ?', [photoId]);
+    });
+  },
+  /** Returns the removed file name so the caller can delete it from storage. The next photo becomes main if the main one is removed. */
+  async removePhoto(photoId: number): Promise<string | null> {
+    const db = getDb(); let file: string | null = null;
+    await db.withTransactionAsync(async () => {
+      const p = await db.getFirstAsync<any>('SELECT * FROM property_photos WHERE id = ?', [photoId]);
+      if (!p) return; file = p.file;
+      await db.runAsync('DELETE FROM property_photos WHERE id = ?', [photoId]);
+      if (p.is_main) { const next = await db.getFirstAsync<any>('SELECT id FROM property_photos WHERE property_id = ? ORDER BY sort, id LIMIT 1', [p.property_id]); if (next) await db.runAsync('UPDATE property_photos SET is_main = 1 WHERE id = ?', [next.id]); }
+    });
+    return file;
+  },
+  async currentAskingPrice(propertyId: number): Promise<number | null> {
+    const r = await getDb().getFirstAsync<any>("SELECT MIN(asking_price) AS p FROM listings WHERE property_id = ? AND status = 'active'", [propertyId]);
+    return r?.p ?? null;
+  },
+  async askingPrices(propertyIds: number[]): Promise<Record<number, number>> {
+    if (!propertyIds.length) return {};
+    const rows = await getDb().getAllAsync<any>(`SELECT property_id, MIN(asking_price) AS p FROM listings WHERE status = 'active' AND property_id IN (${propertyIds.map(() => '?').join(',')}) GROUP BY property_id`, propertyIds);
+    return Object.fromEntries(rows.map((r) => [r.property_id, r.p]));
+  },
+  async favorites(): Promise<number[]> { return (await getDb().getAllAsync<any>('SELECT property_id FROM favorites')).map((r) => r.property_id); },
+  async toggleFavorite(propertyId: number): Promise<boolean> {
+    const db = getDb(); const ex = await db.getFirstAsync('SELECT 1 AS x FROM favorites WHERE property_id = ?', [propertyId]);
+    if (ex) { await db.runAsync('DELETE FROM favorites WHERE property_id = ?', [propertyId]); return false; }
+    await db.runAsync('INSERT INTO favorites (property_id, created_at) VALUES (?,?)', [propertyId, now()]); return true;
+  },
+  async markViewed(propertyId: number) {
+    await getDb().runAsync('INSERT INTO viewed_properties (property_id, viewed_at) VALUES (?,?) ON CONFLICT(property_id) DO UPDATE SET viewed_at = excluded.viewed_at', [propertyId, now()]);
+  },
+  async recentlyViewed(limit = 10): Promise<Property[]> {
+    return (await getDb().getAllAsync<any>('SELECT p.* FROM viewed_properties v JOIN properties p ON p.id = v.property_id WHERE p.record_status = \'active\' ORDER BY v.viewed_at DESC LIMIT ?', [limit])).map(toProperty);
+  },
+  async saveSearch(name: string, filters: object) {
+    assertDomain(name.trim().length > 0, 'name', 'Name the saved search');
+    return (await getDb().runAsync("INSERT INTO saved_searches (name, scope, filters, created_at) VALUES (?, 'properties', ?, ?)", [name.trim(), JSON.stringify(filters), now()])).lastInsertRowId;
+  },
+  async savedSearches() {
+    return (await getDb().getAllAsync<any>("SELECT * FROM saved_searches WHERE scope = 'properties' ORDER BY created_at DESC")).map((r) => ({ id: r.id as number, name: r.name as string, filters: json<any>(r.filters, {}) }));
+  },
+  async deleteSavedSearch(id: number) { await getDb().runAsync('DELETE FROM saved_searches WHERE id = ?', [id]); },
+  async distinctValues(col: 'city' | 'society' | 'area' | 'phase' | 'block'): Promise<string[]> {
+    return (await getDb().getAllAsync<any>(`SELECT DISTINCT ${col} AS v FROM properties WHERE ${col} != '' AND record_status = 'active' ORDER BY ${col} COLLATE NOCASE`)).map((r) => r.v);
+  },
+
   // ---------- ownership ----------
   async getOwnership(propertyId: number) {
     const rows = await getDb().getAllAsync<any>(
@@ -192,6 +280,30 @@ export const PropertyRepo = {
     });
     return id;
   },
+  async getListing(id: number) {
+    const r = await getDb().getFirstAsync<any>('SELECT * FROM listings WHERE id = ?', [id]);
+    return r ? { id: r.id as number, code: r.code as string, propertyId: r.property_id as number, source: r.source as string, dealerId: (r.dealer_id ?? null) as number | null, ownerId: (r.owner_id ?? null) as number | null,
+      askingPrice: r.asking_price as number, minPrice: (r.min_price ?? null) as number | null, commissionType: r.commission_type as 'none' | 'fixed' | 'percent', commissionValue: r.commission_value as number, commissionTerms: r.commission_terms as string,
+      startDate: r.start_date as string, expiryDate: r.expiry_date as string, marketingPermissions: r.marketing_permissions as string, description: r.description as string, status: r.status as ListingStatus } : null;
+  },
+  /** Edit price/terms of a listing. Every change is written to the listing history so the old terms are never lost. */
+  async updateListing(id: number, i: { askingPrice: number; minPrice?: number | null; dealerId?: number | null; ownerId?: number | null; source?: string; commissionType?: 'none' | 'fixed' | 'percent'; commissionValue?: number; commissionTerms?: string; startDate?: string; expiryDate?: string; marketingPermissions?: string; description?: string }) {
+    const db = getDb(); const cur = await PropertyRepo.getListing(id);
+    assertDomain(cur, 'not_found', 'Listing not found');
+    assertDomain(cur!.status !== 'closed', 'listing_closed', 'A closed listing cannot be edited');
+    assertDomain(Number.isInteger(i.askingPrice) && i.askingPrice >= 0, 'asking_price', 'Asking price must be a whole number of rupees');
+    assertDomain(i.minPrice == null || (Number.isInteger(i.minPrice) && i.minPrice >= 0 && i.minPrice <= i.askingPrice), 'min_price', 'Minimum acceptable price cannot be above the asking price');
+    assertDomain(!i.startDate || !i.expiryDate || i.expiryDate >= i.startDate, 'expiry', 'Expiry date is before the start date');
+    const ct = i.commissionType ?? 'none', cv = i.commissionValue ?? 0;
+    assertDomain(ct === 'none' || (cv > 0 && (ct === 'fixed' ? Number.isInteger(cv) : cv <= 100)), 'commission', ct === 'percent' ? 'Commission percentage must be between 0 and 100' : 'Fixed commission must be a whole number of rupees');
+    const t = now();
+    const changes = [cur!.askingPrice !== i.askingPrice && `price ${cur!.askingPrice} → ${i.askingPrice}`, (cur!.minPrice ?? null) !== (i.minPrice ?? null) && 'minimum price changed', cur!.commissionType !== ct || cur!.commissionValue !== cv ? 'commission changed' : '', (cur!.expiryDate || '') !== (i.expiryDate ?? '') && 'expiry changed'].filter(Boolean).join(', ');
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(`UPDATE listings SET source=?, dealer_id=?, owner_id=?, asking_price=?, min_price=?, commission_type=?, commission_value=?, commission_terms=?, start_date=?, expiry_date=?, marketing_permissions=?, description=?, updated_at=? WHERE id=?`,
+        [i.source ?? cur!.source, i.dealerId ?? null, i.ownerId ?? null, i.askingPrice, i.minPrice ?? null, ct, cv, s(i.commissionTerms), s(i.startDate), s(i.expiryDate), s(i.marketingPermissions), s(i.description), t, id]);
+      if (changes) await db.runAsync('INSERT INTO listing_history (listing_id, from_status, to_status, note, at) VALUES (?,?,?,?,?)', [id, cur!.status, cur!.status, `Edited: ${changes}`, t]);
+    });
+  },
   async changeListingStatus(listingId: number, to: ListingStatus, note = ''): Promise<void> {
     assertDomain((LISTING_STATUSES as readonly string[]).includes(to), 'listing_status', 'Unknown listing status');
     const db = getDb();
@@ -220,21 +332,8 @@ export const PropertyRepo = {
   // ---------- availability ----------
   /** Apply a business action to a property's availability. Writes an audit row; returns the rule result (conflicts are returned, not thrown). */
   async applyAvailability(propertyId: number, action: AvailabilityAction, reason = ''): Promise<AvailabilityResult> {
-    const db = getDb();
     let result: AvailabilityResult = { ok: false, code: 'unknown', message: 'Not applied' };
-    await db.withTransactionAsync(async () => {
-      const p = await db.getFirstAsync<any>('SELECT availability, reserved_by_deal_id, transaction_type FROM properties WHERE id = ?', [propertyId]);
-      assertDomain(p, 'not_found', 'Property not found');
-      const active = await db.getAllAsync<{ id: number }>("SELECT id FROM deals WHERE property_id = ? AND stage NOT IN ('completed','cancelled')", [propertyId]);
-      result = transitionAvailability({ current: p.availability, reservedByDealId: p.reserved_by_deal_id ?? null, activeDealIds: active.map((d) => d.id), propertyTransaction: p.transaction_type }, action);
-      if (!result.ok) return;
-      const dealId = 'dealId' in action ? action.dealId : null;
-      await db.runAsync('UPDATE properties SET availability = ?, reserved_by_deal_id = ?, updated_at = ? WHERE id = ?', [result.to, result.reservedByDealId, now(), propertyId]);
-      if (result.to !== p.availability || result.reservedByDealId !== (p.reserved_by_deal_id ?? null)) {
-        await db.runAsync('INSERT INTO availability_history (property_id, from_state, to_state, action, deal_id, reason, at) VALUES (?,?,?,?,?,?,?)',
-          [propertyId, p.availability, result.to, action.type, dealId, reason, now()]);
-      }
-    });
+    await getDb().withTransactionAsync(async () => { result = await applyAvailabilityTx(propertyId, action, reason); });
     return result;
   },
   async availabilityHistory(propertyId: number) {

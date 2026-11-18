@@ -53,7 +53,7 @@ export default function Customers() {
 
   return (
     <View style={{ flex: 1, backgroundColor: c.bg }}>
-      <Header title="Customers" subtitle={data ? `${data.total} total${data.list.length !== data.total ? ` · ${data.list.length} shown` : ''}` : ' '} right={<IconButton icon="person-add-outline" tone="soft" label="Add customer" onPress={() => router.push('/customer/edit')} />} />
+      <Header title="Contacts" subtitle={data ? `${data.total} total${data.list.length !== data.total ? ` · ${data.list.length} shown` : ''}` : ' '} right={<IconButton icon="person-add-outline" tone="soft" label="Add customer" onPress={() => router.push('/customer/edit')} />} />
       <FlatList
         data={loading ? [] : data?.list ?? []} keyExtractor={(i) => String(i.id)} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
         contentContainerStyle={{ paddingHorizontal: space.lg, paddingBottom: TAB_SPACE + 80 }} ItemSeparatorComponent={() => <View style={{ height: space.sm }} />}

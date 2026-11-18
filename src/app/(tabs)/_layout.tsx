@@ -15,10 +15,10 @@ type BottomTabBarProps = Parameters<NonNullable<React.ComponentProps<typeof Tabs
 type Meta = { title: string; icon: React.ComponentProps<typeof Ionicons>['name']; active: React.ComponentProps<typeof Ionicons>['name'] };
 const META: Record<string, Meta> = {
   index: { title: 'Home', icon: 'grid-outline', active: 'grid' },
-  customers: { title: 'Customers', icon: 'people-outline', active: 'people' },
-  pipeline: { title: 'Pipeline', icon: 'funnel-outline', active: 'funnel' },
-  followups: { title: 'Follow-ups', icon: 'notifications-outline', active: 'notifications' },
-  more: { title: 'More', icon: 'ellipsis-horizontal-circle-outline', active: 'ellipsis-horizontal-circle' },
+  explore: { title: 'Explore', icon: 'home-outline', active: 'home' },
+  customers: { title: 'Contacts', icon: 'people-outline', active: 'people' },
+  deals: { title: 'Deals', icon: 'swap-horizontal-outline', active: 'swap-horizontal' },
+  insights: { title: 'Insights', icon: 'stats-chart-outline', active: 'stats-chart' },
 };
 
 export function TabBar({ state, emitter, navigateToTab }: BottomTabBarProps) {
@@ -35,7 +35,7 @@ export function TabBar({ state, emitter, navigateToTab }: BottomTabBarProps) {
         {state.routes.map((route, i) => {
           const m = META[route.name]; if (!m) return null;
           const focused = state.index === i;
-          return <TabItem key={route.key} meta={m} focused={focused} badge={route.name === 'followups' ? due ?? 0 : 0}
+          return <TabItem key={route.key} meta={m} focused={focused} badge={route.name === 'index' ? due ?? 0 : 0}
             onPress={() => { const e = emitter.emit({ type: 'tabPress', target: route.key, canPreventDefault: true }); if (!focused && !e.defaultPrevented) { haptic.tap(); navigateToTab(route.key); } }} />;
         })}
       </View>
@@ -64,10 +64,14 @@ export default function TabsLayout() {
   return (
     <Tabs tabBar={(p) => <TabBar {...p} />} screenOptions={{ headerShown: false, animation: 'fade' }}>
       <Tabs.Screen name="index" />
+      <Tabs.Screen name="explore" />
       <Tabs.Screen name="customers" />
-      <Tabs.Screen name="pipeline" />
-      <Tabs.Screen name="followups" />
-      <Tabs.Screen name="more" />
+      <Tabs.Screen name="deals" />
+      <Tabs.Screen name="insights" />
+      {/* Inherited CRM screens stay reachable from Home / Contacts, but are not in the bottom bar. */}
+      <Tabs.Screen name="pipeline" options={{ href: null }} />
+      <Tabs.Screen name="followups" options={{ href: null }} />
+      <Tabs.Screen name="more" options={{ href: null }} />
     </Tabs>
   );
 }

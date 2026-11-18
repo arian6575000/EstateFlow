@@ -4,7 +4,7 @@
 // EstateFlow has its OWN signing identity: do NOT reuse the RetailX CRM key. Until the real EstateFlow public key is pasted
 // below, the app shows a "license not configured" screen (it never opens unlicensed).
 export const PROJECT_CODE = "estateflow";
-export const PUBLIC_KEY_HEX = "0b5e0c5a3a93d30f0bb17d633c87d304d3f6c4f26a09531c39660ab2ab0b1cf1";
+export const PUBLIC_KEY_HEX = "";
 // =================================================
 // DEVICE_PREFIX: app name at the start of the Device ID ("EstateFlow-87A9-F285-E2DF"); unique per app so licenses never cross apps.
 export const DEVICE_PREFIX = "EstateFlow";
